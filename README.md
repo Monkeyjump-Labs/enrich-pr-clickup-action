@@ -18,6 +18,7 @@ permissions:
 
 jobs:
   enrich_pr:
+    name: Enrich PR
     runs-on: ubuntu-latest
     steps:
       - uses: Monkeyjump-Labs/enrich-pr-clickup-action@v1

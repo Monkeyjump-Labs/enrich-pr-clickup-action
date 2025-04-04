@@ -25,7 +25,7 @@ jobs:
         id: enrich_pr_with_clickup_info
         name: Enrich PR with clickup information
         with:
-          pr_number: github.event.pull_request.number
+          pr_number: ${{ github.event.pull_request.number }}
           clickup_api_token: ${{ secrets.CLICKUP_API_TOKEN }}
 ```
 

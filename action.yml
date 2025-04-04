@@ -21,6 +21,7 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github_token }}
+        PR_NUMBER: ${{ inputs.pr_number }}
       run: |
         PR_JSON=$(gh pr view "$PR_NUMBER" --json title,body --repo "$GITHUB_REPOSITORY")
         PR_TITLE=$(echo "$PR_JSON" | jq -r '.title')
@@ -31,9 +32,6 @@ runs:
         echo "PR_BODY<<EOF" >> $GITHUB_ENV
         echo "$PR_BODY" >> $GITHUB_ENV
         echo "EOF" >> $GITHUB_ENV
-
-      env:
-        PR_NUMBER: ${{ inputs.pr_number }}
 
     - name: Extract ClickUp Ticket IDs from PR
       id: extract_tickets

@@ -23,6 +23,7 @@ runs:
         GH_TOKEN: ${{ inputs.github_token }}
         PR_NUMBER: ${{ inputs.pr_number }}
       run: |
+        echo "🔎 Fetching metadata for PR #$PR_NUMBER..."
         PR_JSON=$(gh pr view "$PR_NUMBER" --json title,body --repo "$GITHUB_REPOSITORY")
         PR_TITLE=$(echo "$PR_JSON" | jq -r '.title')
         PR_BODY=$(echo "$PR_JSON" | jq -r '.body')
@@ -37,11 +38,17 @@ runs:
       id: extract_tickets
       shell: bash
       run: |
+        echo "🔎 Extracting ClickUp ticket IDs from PR..."
         TICKET_IDS=$(echo "$PR_TITLE $PR_BODY" | grep -oE '#[a-zA-Z0-9]{6,}' | tr '\n\r' ',' | sed -E "s/,$//g" || true)
         if [ -z "$TICKET_IDS" ]; then
-          echo "No ticket numbers found"
+          echo "❌ No ticket numbers found"
         else
-          echo "Found tickets: $TICKET_IDS"
+          echo "🚀 Found tickets: $TICKET_IDS"
+          # Print each ticket with its URL
+          for T in $(echo "$TICKET_IDS" | tr ',' ' '); do
+            T_NO_HASH="${T/#\#/}"
+            echo "   → Ticket $T (https://app.clickup.com/t/${T_NO_HASH})"
+          done
           echo "TICKET_IDS=$TICKET_IDS" >> "$GITHUB_OUTPUT"
         fi
 
@@ -49,7 +56,7 @@ runs:
       if: ${{ steps.extract_tickets.outputs.TICKET_IDS == '' }}
       shell: bash
       run: |
-        echo "No ClickUp Ticket Linked"
+        echo "❌ No ClickUp Ticket Linked"
         exit 1
 
     - name: Fetch and Aggregate ClickUp Labels
@@ -58,15 +65,17 @@ runs:
       shell: bash
       env:
         TICKET_IDS: ${{ steps.extract_tickets.outputs.TICKET_IDS }}
-        CLICKUP_API_TOKEN: ${{ inputs.CLICKUP_API_TOKEN }}
+        CLICKUP_API_TOKEN: ${{ inputs.clickup_api_token }}
       run: |
-        echo "Unique ticket ids: $TICKET_IDS"
+        echo "🔎 Fetching and aggregating ClickUp labels..."
+        echo "🚀 Unique ticket IDs: $TICKET_IDS"
         LABELS=""
         if [ "$TICKET_IDS" ]; then
           IFS=',' read -r -a TICKET_ARRAY <<< "$TICKET_IDS"
-          for TICKET_ID in "${TICKET_ARRAY[@]}"; do
-            echo "Getting labels for ticket $TICKET_ID"
-            TICKET_ID="${TICKET_ID/#\#/}"
+          for TICKET_ID_RAW in "${TICKET_ARRAY[@]}"; do
+            # Remove the '#' from the raw ID for API calls
+            TICKET_ID="${TICKET_ID_RAW/#\#/}"
+            echo "🚀 Getting labels for ticket #${TICKET_ID} (https://app.clickup.com/t/${TICKET_ID})"
             RESPONSE=$(curl -s -k -H "Authorization: $CLICKUP_API_TOKEN" \
               "https://api.clickup.com/api/v2/task/${TICKET_ID}")
             TICKET_LABELS=$(echo "$RESPONSE" | jq -r '.tags[].name')
@@ -75,7 +84,7 @@ runs:
             fi
             PARENT_ID=$(echo "$RESPONSE" | jq -r '.parent' | grep -oE '[a-zA-Z0-9]{6,}' || true)
             if [ "$PARENT_ID" ]; then
-              echo "Getting labels for parent ticket $PARENT_ID"
+              echo "🚀 Getting labels for parent ticket #${PARENT_ID} (https://app.clickup.com/t/${PARENT_ID})"
               PARENT_RESPONSE=$(curl -s -k -H "Authorization: $CLICKUP_API_TOKEN" \
                 "https://api.clickup.com/api/v2/task/${PARENT_ID}")
               PARENT_LABELS=$(echo "$PARENT_RESPONSE" | jq -r '.tags[].name')
@@ -85,16 +94,17 @@ runs:
             fi
           done
           UNIQUE_LABELS=$(echo -e "$LABELS" | sort | uniq | grep -v "^\s*$" | tr '\n' ',' | sed 's/,$//')
+          echo "🚀 Final aggregated labels: $UNIQUE_LABELS"
           echo "LABELS=$UNIQUE_LABELS" >> "$GITHUB_OUTPUT"
         else
-          echo "No ticket numbers found - skipping"
+          echo "⚠️ No ticket numbers found - skipping"
         fi
 
     - name: Fail if no labels found
       if: ${{ steps.fetch_labels.outputs.LABELS == '' }}
       shell: bash
       run: |
-        echo "No ClickUp Labels Found"
+        echo "❌ No ClickUp Labels Found"
         exit 1
 
     - name: Apply Labels to PR
@@ -106,10 +116,11 @@ runs:
         REPO: ${{ github.repository }}
         GITHUB_TOKEN: ${{ inputs.github_token }}
       run: |
+        echo "🏷️ Applying labels to PR #$PR_NUMBER..."
         if [ "$LABELS" ]; then
           IFS=',' read -r -a LABEL_ARRAY <<< "${LABELS}"
           for LABEL in "${LABEL_ARRAY[@]}"; do
-            echo "Applying label $LABEL"
+            echo "   → Applying label '$LABEL'"
             curl -X POST \
               -H "Authorization: token $GITHUB_TOKEN" \
               -H "Accept: application/vnd.github.v3+json" \
@@ -117,5 +128,5 @@ runs:
               -d "{\"labels\":[\"${LABEL}\"]}"
           done
         else
-          echo "No labels found - skipping"
+          echo "⚠️ No labels found - skipping"
         fi

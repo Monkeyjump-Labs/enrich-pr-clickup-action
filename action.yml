@@ -12,6 +12,10 @@ inputs:
   pr_number:
     description: 'The number of the pull request to apply labels to'
     required: true
+  fail_on_no_ticket:
+    description: 'Whether to fail the action if no ClickUp ticket is found in the PR'
+    default: 'true'
+    required: false
 
 runs:
   using: 'composite'
@@ -53,7 +57,7 @@ runs:
         fi
 
     - name: Fail if no ticket found
-      if: ${{ steps.extract_tickets.outputs.TICKET_IDS == '' }}
+      if: ${{ steps.extract_tickets.outputs.TICKET_IDS == '' && inputs.fail_on_no_ticket == 'true' }}
       shell: bash
       run: |
         echo "❌ No ClickUp Ticket Linked"
@@ -101,7 +105,7 @@ runs:
         fi
 
     - name: Fail if no labels found
-      if: ${{ steps.fetch_labels.outputs.LABELS == '' }}
+      if: ${{ steps.fetch_labels.outputs.LABELS == '' && inputs.fail_on_no_ticket == 'true' }}
       shell: bash
       run: |
         echo "❌ No ClickUp Labels Found"

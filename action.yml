@@ -5,6 +5,9 @@ inputs:
   clickup_api_token:
     description: The clickup API token that has access to retrieve ticket information
     required: true
+  clickup_team_id:
+    description: 'The ClickUp team/workspace ID (required for custom task IDs like ENG-123). Find it in your ClickUp URL.'
+    required: false
   github_token:
     description: 'GITHUB_TOKEN or a repo scoped PAT'
     default: ${{ github.token }}
@@ -71,31 +74,87 @@ runs:
       env:
         TICKET_IDS: ${{ steps.extract_tickets.outputs.TICKET_IDS }}
         CLICKUP_API_TOKEN: ${{ inputs.clickup_api_token }}
+        CLICKUP_TEAM_ID: ${{ inputs.clickup_team_id }}
       run: |
         echo "🔎 Fetching and aggregating ClickUp labels..."
         echo "🚀 Unique ticket IDs: $TICKET_IDS"
         LABELS=""
+
+        # Function to check if a ticket ID is a custom ID (PREFIX-NUMBER format)
+        is_custom_id() {
+          [[ "$1" =~ ^[A-Za-z]+-[0-9]+$ ]]
+        }
+
+        # Function to resolve a custom ID to an internal ClickUp task ID
+        resolve_custom_id() {
+          local CUSTOM_ID="$1"
+          if [ -z "$CLICKUP_TEAM_ID" ]; then
+            echo "⚠️ Custom ID '$CUSTOM_ID' detected but no clickup_team_id provided. Cannot resolve." >&2
+            return 1
+          fi
+          echo "🔍 Searching for custom ID '$CUSTOM_ID' in team $CLICKUP_TEAM_ID..." >&2
+          local SEARCH_RESPONSE=$(curl -s -k \
+            -H "Authorization: $CLICKUP_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            "https://api.clickup.com/api/v2/team/${CLICKUP_TEAM_ID}/task?custom_task_ids=true&include_closed=true&page=0")
+
+          # Search for the task with matching custom_id in the response
+          local INTERNAL_ID=$(echo "$SEARCH_RESPONSE" | jq -r --arg cid "$CUSTOM_ID" '.tasks[] | select(.custom_id == $cid) | .id' 2>/dev/null | head -1)
+
+          if [ -z "$INTERNAL_ID" ] || [ "$INTERNAL_ID" = "null" ]; then
+            echo "⚠️ Could not find task with custom ID '$CUSTOM_ID'" >&2
+            return 1
+          fi
+
+          echo "✅ Resolved custom ID '$CUSTOM_ID' to internal ID '$INTERNAL_ID'" >&2
+          echo "$INTERNAL_ID"
+        }
+
+        # Function to fetch task and extract labels
+        fetch_task_labels() {
+          local TASK_ID="$1"
+          local RESPONSE=$(curl -s -k -H "Authorization: $CLICKUP_API_TOKEN" \
+            "https://api.clickup.com/api/v2/task/${TASK_ID}")
+
+          local TASK_LABELS=$(echo "$RESPONSE" | jq -r '.tags[].name' 2>/dev/null)
+          if [ "$TASK_LABELS" ]; then
+            echo "$TASK_LABELS"
+          fi
+
+          # Check for parent task
+          local PARENT_ID=$(echo "$RESPONSE" | jq -r '.parent' 2>/dev/null | grep -oE '[a-zA-Z0-9]{6,}' || true)
+          if [ "$PARENT_ID" ]; then
+            echo "🚀 Getting labels for parent ticket #${PARENT_ID} (https://app.clickup.com/t/${PARENT_ID})" >&2
+            local PARENT_RESPONSE=$(curl -s -k -H "Authorization: $CLICKUP_API_TOKEN" \
+              "https://api.clickup.com/api/v2/task/${PARENT_ID}")
+            local PARENT_LABELS=$(echo "$PARENT_RESPONSE" | jq -r '.tags[].name' 2>/dev/null)
+            if [ "$PARENT_LABELS" ]; then
+              echo "$PARENT_LABELS"
+            fi
+          fi
+        }
+
         if [ "$TICKET_IDS" ]; then
           IFS=',' read -r -a TICKET_ARRAY <<< "$TICKET_IDS"
           for TICKET_ID_RAW in "${TICKET_ARRAY[@]}"; do
             # Remove the '#' from the raw ID for API calls
             TICKET_ID="${TICKET_ID_RAW/#\#/}"
-            echo "🚀 Getting labels for ticket #${TICKET_ID} (https://app.clickup.com/t/${TICKET_ID})"
-            RESPONSE=$(curl -s -k -H "Authorization: $CLICKUP_API_TOKEN" \
-              "https://api.clickup.com/api/v2/task/${TICKET_ID}")
-            TICKET_LABELS=$(echo "$RESPONSE" | jq -r '.tags[].name')
-            if [ "$TICKET_LABELS" ]; then
-              LABELS="$LABELS\n$TICKET_LABELS"
-            fi
-            PARENT_ID=$(echo "$RESPONSE" | jq -r '.parent' | grep -oE '[a-zA-Z0-9]{6,}' || true)
-            if [ "$PARENT_ID" ]; then
-              echo "🚀 Getting labels for parent ticket #${PARENT_ID} (https://app.clickup.com/t/${PARENT_ID})"
-              PARENT_RESPONSE=$(curl -s -k -H "Authorization: $CLICKUP_API_TOKEN" \
-                "https://api.clickup.com/api/v2/task/${PARENT_ID}")
-              PARENT_LABELS=$(echo "$PARENT_RESPONSE" | jq -r '.tags[].name')
-              if [ "$PARENT_LABELS" ]; then
-                LABELS="$LABELS\n$PARENT_LABELS"
+
+            # Determine if this is a custom ID or standard ID
+            if is_custom_id "$TICKET_ID"; then
+              echo "🚀 Custom ID detected: $TICKET_ID"
+              INTERNAL_ID=$(resolve_custom_id "$TICKET_ID")
+              if [ $? -ne 0 ] || [ -z "$INTERNAL_ID" ]; then
+                echo "⚠️ Skipping ticket $TICKET_ID - could not resolve custom ID"
+                continue
               fi
+              TICKET_ID="$INTERNAL_ID"
+            fi
+
+            echo "🚀 Getting labels for ticket #${TICKET_ID} (https://app.clickup.com/t/${TICKET_ID})"
+            TASK_LABELS=$(fetch_task_labels "$TICKET_ID")
+            if [ "$TASK_LABELS" ]; then
+              LABELS="$LABELS\n$TASK_LABELS"
             fi
           done
           UNIQUE_LABELS=$(echo -e "$LABELS" | sort | uniq | grep -v "^\s*$" | tr '\n' ',' | sed 's/,$//')

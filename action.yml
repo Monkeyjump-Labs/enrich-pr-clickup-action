@@ -43,7 +43,8 @@ runs:
       shell: bash
       run: |
         echo "🔎 Extracting ClickUp ticket IDs from PR..."
-        TICKET_IDS=$(echo "$PR_TITLE $PR_BODY" | grep -oE '#[a-zA-Z0-9]{6,}' | tr '\n\r' ',' | sed -E "s/,$//g" || true)
+        # Match both standard ClickUp IDs (6+ alphanumeric) and custom IDs (PREFIX-NUMBER like #MY-1, #HERO-4)
+        TICKET_IDS=$(echo "$PR_TITLE $PR_BODY" | grep -oE '#([a-zA-Z0-9]{6,}|[A-Za-z]+-[0-9]+)' | tr '\n\r' ',' | sed -E "s/,$//g" || true)
         if [ -z "$TICKET_IDS" ]; then
           echo "❌ No ticket numbers found"
         else

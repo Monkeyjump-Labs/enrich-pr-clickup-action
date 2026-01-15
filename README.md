@@ -1,6 +1,13 @@
 # enrich-pr-clickup-action
 A github action to enrich a particular PR with Clickup labels.
 
+## Supported Ticket ID Formats
+
+This action extracts ClickUp ticket IDs from your PR title and body. It supports:
+
+- **Standard ClickUp IDs**: `#abc123def` (6+ alphanumeric characters)
+- **Custom ClickUp IDs**: `#MY-1`, `#HERO-4`, `#DEV-123` (PREFIX-NUMBER format)
+
 ## Usage
 
 To use this action, add a github action to your repository that is similar to the below:

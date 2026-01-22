@@ -100,7 +100,7 @@ runs:
 
           # Search for the task with matching custom_id in the response
           local INTERNAL_ID=$(echo "$SEARCH_RESPONSE" | jq -r --arg cid "$CUSTOM_ID" '.tasks[] | select(.custom_id == $cid) | .id' 2>/dev/null)
-
+          echo "Attempting to access '$INTERNAL_ID'"
           if [ -z "$INTERNAL_ID" ] || [ "$INTERNAL_ID" = "null" ]; then
             echo "⚠️ Could not find task with custom ID '$CUSTOM_ID'" >&2
             return 1

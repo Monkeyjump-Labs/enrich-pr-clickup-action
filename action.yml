@@ -96,10 +96,10 @@ runs:
           local SEARCH_RESPONSE=$(curl -s -k \
             -H "Authorization: $CLICKUP_API_TOKEN" \
             -H "Content-Type: application/json" \
-            "https://api.clickup.com/api/v2/team/${CLICKUP_TEAM_ID}/task?custom_task_ids=true&include_closed=true&page=0&subtasks=true")
+            "https://api.clickup.com/api/v2/task/${CUSTOM_ID}?custom_task_ids=true&team_id=${CLICKUP_TEAM_ID}&include_closed=true&include_subtasks=true")
 
           # Search for the task with matching custom_id in the response
-          local INTERNAL_ID=$(echo "$SEARCH_RESPONSE" | jq -r --arg cid "$CUSTOM_ID" '.tasks[] | select(.custom_id == $cid) | .id' 2>/dev/null | head -1)
+          local INTERNAL_ID=$(echo "$SEARCH_RESPONSE" | jq -r .id)
           if [ -z "$INTERNAL_ID" ] || [ "$INTERNAL_ID" = "null" ]; then
             echo "⚠️ Could not find task with custom ID '$CUSTOM_ID'" >&2
             return 1

@@ -1,5 +1,6 @@
 # enrich-pr-clickup-action
-A github action to enrich a particular PR with Clickup labels.
+
+A GitHub Action to enrich a particular PR with Clickup labels.
 
 ## Supported Ticket ID Formats
 
@@ -12,7 +13,7 @@ This action extracts ClickUp ticket IDs from your PR title and body. It supports
 
 ## Usage
 
-To use this action, add a github action to your repository that is similar to the below:
+To use this action, add a GitHub Action to your repository that is similar to the below:
 
 ```yaml
 name: Sync ClickUp Labels to PR
@@ -57,15 +58,15 @@ To support custom task IDs, this action uses ClickUp's search endpoint, which re
   with:
     pr_number: ${{ github.event.pull_request.number }}
     clickup_api_token: ${{ secrets.CLICKUP_API_TOKEN }}
-    clickup_team_id: '1234567'  # Required for custom IDs like #ENG-123
+    clickup_team_id: '1234567' # Required for custom IDs like #ENG-123
 ```
 
 ### Inputs
 
-| Input | Required | Description |
-|-------|----------|-------------|
-| `clickup_api_token` | Yes | ClickUp API token with access to retrieve ticket information |
-| `clickup_team_id` | No* | ClickUp team/workspace ID. *Required if using custom task IDs |
-| `github_token` | No | GitHub token (defaults to `${{ github.token }}`) |
-| `pr_number` | Yes | The PR number to apply labels to |
-| `fail_on_no_ticket` | No | Fail if no ticket found (default: `true`) |
+| Input               | Required | Description                                                    |
+| ------------------- | -------- | -------------------------------------------------------------- |
+| `clickup_api_token` | Yes      | ClickUp API token with access to retrieve ticket information   |
+| `clickup_team_id`   | No\*     | ClickUp team/workspace ID. \*Required if using custom task IDs |
+| `github_token`      | No       | GitHub token (defaults to `${{ github.token }}`)               |
+| `pr_number`         | Yes      | The PR number to apply labels to                               |
+| `fail_on_no_ticket` | No       | Fail if no ticket found (default: `true`)                      |

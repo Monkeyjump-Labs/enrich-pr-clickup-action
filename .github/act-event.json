@@ -1,0 +1,11 @@
+{
+  "repository": {
+    "default_branch": "main"
+  },
+  "pull_request": {
+    "head": {
+      "sha": "HEAD"
+    },
+    "commits": 1
+  }
+}

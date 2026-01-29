@@ -70,3 +70,22 @@ To support custom task IDs, this action uses ClickUp's search endpoint, which re
 | `github_token`      | No       | GitHub token (defaults to `${{ github.token }}`)               |
 | `pr_number`         | Yes      | The PR number to apply labels to                               |
 | `fail_on_no_ticket` | No       | Fail if no ticket found (default: `true`)                      |
+
+## Running GitHub Actions locally
+
+You can run registered GitHub Actions locally using [act](https://github.com/nektos/act), which simulates GitHub Actions on your machine.
+
+### Prerequisites
+
+- Install [act](https://github.com/nektos/act#installation)
+- Docker must be running
+
+### Running the Linter
+
+From the repository root, run:
+
+```bash
+act pull_request
+```
+
+The repository includes an `.actrc` configuration file that automatically sets the required environment variables and event payload for the linter to work correctly.

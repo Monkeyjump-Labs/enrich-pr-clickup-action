@@ -125,7 +125,7 @@ runs:
           fi
 
           # Output custom_type_id for caller to resolve (associative arrays don't survive subshells)
-          local TYPE_ID=$(echo "$RESPONSE" | jq -r '.custom_type_id // empty' 2>/dev/null)
+          local TYPE_ID=$(echo "$RESPONSE" | jq -r '.custom_item_id // empty' 2>/dev/null)
           if [ -n "$TYPE_ID" ]; then
             echo "__TYPE_ID__:$TYPE_ID"
           fi

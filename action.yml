@@ -112,6 +112,20 @@ runs:
           echo "$INTERNAL_ID"
         }
 
+        # Function to extract task type label from a task response
+        extract_task_type_label() {
+          local RESPONSE="$1"
+          local TYPE_ID=$(echo "$RESPONSE" | jq -r '.custom_type_id // empty' 2>/dev/null)
+          if [ -n "$TYPE_ID" ] && [ "${CUSTOM_TYPE_MAP[$TYPE_ID]+_}" ]; then
+            local TYPE_NAME="${CUSTOM_TYPE_MAP[$TYPE_ID]}"
+            local TYPE_NAME_LOWER=$(echo "$TYPE_NAME" | tr '[:upper:]' '[:lower:]')
+            if [ "$TYPE_NAME_LOWER" != "task" ] && [ "$TYPE_NAME_LOWER" != "item" ]; then
+              echo "✅ Detected task type: '$TYPE_NAME'" >&2
+              echo "$TYPE_NAME_LOWER"
+            fi
+          fi
+        }
+
         # Function to fetch task and extract labels
         fetch_task_labels() {
           local TASK_ID="$1"
@@ -122,6 +136,9 @@ runs:
           if [ "$TASK_LABELS" ]; then
             echo "$TASK_LABELS"
           fi
+
+          # Check task type and add as label if applicable
+          extract_task_type_label "$RESPONSE"
 
           # Check for parent task
           local PARENT_ID=$(echo "$RESPONSE" | jq -r '.parent' 2>/dev/null | grep -oE '[a-zA-Z0-9]{6,}' || true)
@@ -135,6 +152,25 @@ runs:
             fi
           fi
         }
+
+        # Build a lookup map of custom task type IDs to names
+        declare -A CUSTOM_TYPE_MAP
+        if [ -n "$CLICKUP_TEAM_ID" ]; then
+          echo "🔍 Fetching custom task types for team $CLICKUP_TEAM_ID..."
+          CUSTOM_ITEMS_RESPONSE=$(curl -s -k \
+            -H "Authorization: $CLICKUP_API_TOKEN" \
+            "https://api.clickup.com/api/v2/team/${CLICKUP_TEAM_ID}/custom_item")
+          CUSTOM_ITEMS=$(echo "$CUSTOM_ITEMS_RESPONSE" | jq -r '.custom_items[]? | "\(.id)=\(.name)"' 2>/dev/null)
+          while IFS='=' read -r TYPE_ID TYPE_NAME; do
+            if [ -n "$TYPE_ID" ]; then
+              CUSTOM_TYPE_MAP["$TYPE_ID"]="$TYPE_NAME"
+              echo "   → Registered type: $TYPE_NAME (id: $TYPE_ID)" >&2
+            fi
+          done <<< "$CUSTOM_ITEMS"
+          echo "✅ Loaded ${#CUSTOM_TYPE_MAP[@]} custom task types"
+        else
+          echo "⚠️ No clickup_team_id provided - task type detection disabled"
+        fi
 
         if [ "$TICKET_IDS" ]; then
           IFS=',' read -r -a TICKET_ARRAY <<< "$TICKET_IDS"

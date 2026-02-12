@@ -112,21 +112,8 @@ runs:
           echo "$INTERNAL_ID"
         }
 
-        # Function to extract task type label from a task response
-        extract_task_type_label() {
-          local RESPONSE="$1"
-          local TYPE_ID=$(echo "$RESPONSE" | jq -r '.custom_type_id // empty' 2>/dev/null)
-          if [ -n "$TYPE_ID" ] && [ "${CUSTOM_TYPE_MAP[$TYPE_ID]+_}" ]; then
-            local TYPE_NAME="${CUSTOM_TYPE_MAP[$TYPE_ID]}"
-            local TYPE_NAME_LOWER=$(echo "$TYPE_NAME" | tr '[:upper:]' '[:lower:]')
-            if [ "$TYPE_NAME_LOWER" != "task" ] && [ "$TYPE_NAME_LOWER" != "item" ]; then
-              echo "✅ Detected task type: '$TYPE_NAME'" >&2
-              echo "$TYPE_NAME_LOWER"
-            fi
-          fi
-        }
-
         # Function to fetch task and extract labels
+        # Outputs tag names (one per line) and a __TYPE_ID__:<id> line for task type detection
         fetch_task_labels() {
           local TASK_ID="$1"
           local RESPONSE=$(curl -s -k -H "Authorization: $CLICKUP_API_TOKEN" \
@@ -137,8 +124,11 @@ runs:
             echo "$TASK_LABELS"
           fi
 
-          # Check task type and add as label if applicable
-          extract_task_type_label "$RESPONSE"
+          # Output custom_type_id for caller to resolve (associative arrays don't survive subshells)
+          local TYPE_ID=$(echo "$RESPONSE" | jq -r '.custom_type_id // empty' 2>/dev/null)
+          if [ -n "$TYPE_ID" ]; then
+            echo "__TYPE_ID__:$TYPE_ID"
+          fi
 
           # Check for parent task
           local PARENT_ID=$(echo "$RESPONSE" | jq -r '.parent' 2>/dev/null | grep -oE '[a-zA-Z0-9]{6,}' || true)
@@ -164,7 +154,7 @@ runs:
           while IFS='=' read -r TYPE_ID TYPE_NAME; do
             if [ -n "$TYPE_ID" ]; then
               CUSTOM_TYPE_MAP["$TYPE_ID"]="$TYPE_NAME"
-              echo "   → Registered type: $TYPE_NAME (id: $TYPE_ID)" >&2
+              echo "   → Registered type: $TYPE_NAME (id: $TYPE_ID)"
             fi
           done <<< "$CUSTOM_ITEMS"
           echo "✅ Loaded ${#CUSTOM_TYPE_MAP[@]} custom task types"
@@ -190,12 +180,28 @@ runs:
             fi
 
             echo "🚀 Getting labels for ticket #${TICKET_ID} (https://app.clickup.com/t/${TICKET_ID})"
-            TASK_LABELS=$(fetch_task_labels "$TICKET_ID")
+            TASK_OUTPUT=$(fetch_task_labels "$TICKET_ID")
+
+            # Extract custom type ID and resolve to a label using the map (in this shell, not a subshell)
+            TYPE_LINE=$(echo "$TASK_OUTPUT" | grep '^__TYPE_ID__:' || true)
+            TASK_LABELS=$(echo "$TASK_OUTPUT" | grep -v '^__TYPE_ID__:' || true)
+            if [ -n "$TYPE_LINE" ]; then
+              TYPE_ID="${TYPE_LINE#__TYPE_ID__:}"
+              if [ "${CUSTOM_TYPE_MAP[$TYPE_ID]+_}" ]; then
+                TYPE_NAME="${CUSTOM_TYPE_MAP[$TYPE_ID]}"
+                TYPE_NAME_LOWER=$(echo "$TYPE_NAME" | tr '[:upper:]' '[:lower:]')
+                if [ "$TYPE_NAME_LOWER" != "task" ] && [ "$TYPE_NAME_LOWER" != "item" ]; then
+                  echo "✅ Detected task type: '$TYPE_NAME'"
+                  TASK_LABELS=$(printf '%s\n%s' "$TASK_LABELS" "$TYPE_NAME_LOWER")
+                fi
+              fi
+            fi
+
             if [ "$TASK_LABELS" ]; then
               LABELS="$LABELS\n$TASK_LABELS"
             fi
           done
-          UNIQUE_LABELS=$(echo -e "$LABELS" | sort | uniq | grep -v "^\s*$" | tr '\n' ',' | sed 's/,$//')
+          UNIQUE_LABELS=$(echo -e "$LABELS" | sort | uniq | grep -v "^\s*$" | tr '\n' ',' | sed 's/,$//' || true)
           echo "🚀 Final aggregated labels: $UNIQUE_LABELS"
           echo "LABELS=$UNIQUE_LABELS" >> "$GITHUB_OUTPUT"
         else

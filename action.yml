@@ -140,6 +140,15 @@ runs:
             if [ "$PARENT_LABELS" ]; then
               echo "$PARENT_LABELS"
             fi
+
+            # If the child task has no custom type, fall back to the parent's custom type
+            if [ -z "$TYPE_ID" ]; then
+              local PARENT_TYPE_ID=$(echo "$PARENT_RESPONSE" | jq -r '.custom_item_id // empty' 2>/dev/null)
+              if [ -n "$PARENT_TYPE_ID" ]; then
+                echo "🔍 Child task has no custom type, inheriting from parent" >&2
+                echo "__TYPE_ID__:$PARENT_TYPE_ID"
+              fi
+            fi
           fi
         }
 

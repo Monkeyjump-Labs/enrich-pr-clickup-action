@@ -141,13 +141,10 @@ runs:
               echo "$PARENT_LABELS"
             fi
 
-            # If the child task has no custom type, fall back to the parent's custom type
-            if [ -z "$TYPE_ID" ]; then
-              local PARENT_TYPE_ID=$(echo "$PARENT_RESPONSE" | jq -r '.custom_item_id // empty' 2>/dev/null)
-              if [ -n "$PARENT_TYPE_ID" ]; then
-                echo "🔍 Child task has no custom type, inheriting from parent" >&2
-                echo "__TYPE_ID__:$PARENT_TYPE_ID"
-              fi
+            # Always output parent type so the caller can fall back if child type is filtered out
+            local PARENT_TYPE_ID=$(echo "$PARENT_RESPONSE" | jq -r '.custom_item_id // empty' 2>/dev/null)
+            if [ -n "$PARENT_TYPE_ID" ]; then
+              echo "__PARENT_TYPE_ID__:$PARENT_TYPE_ID"
             fi
           fi
         }
@@ -191,19 +188,40 @@ runs:
             echo "🚀 Getting labels for ticket #${TICKET_ID} (https://app.clickup.com/t/${TICKET_ID})"
             TASK_OUTPUT=$(fetch_task_labels "$TICKET_ID")
 
-            # Extract custom type ID and resolve to a label using the map (in this shell, not a subshell)
+            # Extract type IDs and resolve to a label using the map (in this shell, not a subshell)
             TYPE_LINE=$(echo "$TASK_OUTPUT" | grep '^__TYPE_ID__:' || true)
-            TASK_LABELS=$(echo "$TASK_OUTPUT" | grep -v '^__TYPE_ID__:' || true)
+            PARENT_TYPE_LINE=$(echo "$TASK_OUTPUT" | grep '^__PARENT_TYPE_ID__:' || true)
+            TASK_LABELS=$(echo "$TASK_OUTPUT" | grep -v '^__\(PARENT_\)\?TYPE_ID__:' || true)
+
+            # Try to resolve the child task type; fall back to parent type if child is generic
+            RESOLVED_TYPE=""
             if [ -n "$TYPE_LINE" ]; then
               TYPE_ID="${TYPE_LINE#__TYPE_ID__:}"
               if [ "${CUSTOM_TYPE_MAP[$TYPE_ID]+_}" ]; then
                 TYPE_NAME="${CUSTOM_TYPE_MAP[$TYPE_ID]}"
                 TYPE_NAME_LOWER=$(echo "$TYPE_NAME" | tr '[:upper:]' '[:lower:]')
                 if [ "$TYPE_NAME_LOWER" != "task" ] && [ "$TYPE_NAME_LOWER" != "item" ]; then
+                  RESOLVED_TYPE="$TYPE_NAME_LOWER"
                   echo "✅ Detected task type: '$TYPE_NAME'"
-                  TASK_LABELS=$(printf '%s\n%s' "$TASK_LABELS" "$TYPE_NAME_LOWER")
                 fi
               fi
+            fi
+
+            # Fall back to parent type if child type was empty or generic (task/item)
+            if [ -z "$RESOLVED_TYPE" ] && [ -n "$PARENT_TYPE_LINE" ]; then
+              PARENT_TYPE_ID="${PARENT_TYPE_LINE#__PARENT_TYPE_ID__:}"
+              if [ "${CUSTOM_TYPE_MAP[$PARENT_TYPE_ID]+_}" ]; then
+                PARENT_TYPE_NAME="${CUSTOM_TYPE_MAP[$PARENT_TYPE_ID]}"
+                PARENT_TYPE_NAME_LOWER=$(echo "$PARENT_TYPE_NAME" | tr '[:upper:]' '[:lower:]')
+                if [ "$PARENT_TYPE_NAME_LOWER" != "task" ] && [ "$PARENT_TYPE_NAME_LOWER" != "item" ]; then
+                  RESOLVED_TYPE="$PARENT_TYPE_NAME_LOWER"
+                  echo "✅ Inherited task type from parent: '$PARENT_TYPE_NAME'"
+                fi
+              fi
+            fi
+
+            if [ -n "$RESOLVED_TYPE" ]; then
+              TASK_LABELS=$(printf '%s\n%s' "$TASK_LABELS" "$RESOLVED_TYPE")
             fi
 
             if [ "$TASK_LABELS" ]; then

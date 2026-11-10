@@ -1,0 +1,132 @@
+name: Release
+
+# Run from the Actions tab, or: gh workflow run release.yml -f version=2.1.0
+# Tags the current main as v<version>, publishes a GitHub release with generated notes, and
+# moves the floating major tag (v2) forward to it so consumers pinned to it pick the release up.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Semantic version to release, e.g. 2.1.0 (a pre-release like 2.2.0-rc.1 does not move the major tag)'
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    name: CI
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  release:
+    name: Tag and publish
+    needs: ci
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      REQUESTED_VERSION: ${{ inputs.version }}
+    steps:
+      # Everything that can refuse the release is checked here, before anything is created.
+      - name: Validate the request
+        run: |
+          set -o pipefail
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::Releases are cut from main, not $GITHUB_REF"
+            exit 1
+          fi
+          VERSION="${REQUESTED_VERSION#v}"
+          if ! [[ "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::'$REQUESTED_VERSION' is not a semantic version like 2.1.0 or 2.2.0-rc.1"
+            exit 1
+          fi
+          TAG="v$VERSION"
+          if gh api "repos/$REPO/git/ref/tags/$TAG" --silent 2>/dev/null; then
+            echo "::error::$TAG already exists"
+            exit 1
+          fi
+
+          MOVE_MAJOR=false
+          MAJOR_TAG=""
+          if [[ "$VERSION" != *-* ]]; then
+            MAJOR_TAG="v${VERSION%%.*}"
+            # A patch to an older minor (2.0.1 after 2.1.0) must not drag the major tag backwards
+            # Listed on its own so a failed lookup stops the run instead of reading as "no newer tag"
+            EXISTING=$(gh api --paginate "repos/$REPO/git/matching-refs/tags/$MAJOR_TAG." --jq '.[].ref | ltrimstr("refs/tags/")')
+            HIGHEST=$(printf '%s\n%s\n' "$EXISTING" "$TAG" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)
+            if [ "$HIGHEST" != "$TAG" ]; then
+              echo "::notice::$MAJOR_TAG stays where it is: $HIGHEST is newer than $TAG"
+            elif ! CURRENT=$(gh api "repos/$REPO/git/ref/tags/$MAJOR_TAG" --jq '.object.type + " " + .object.sha' 2> "$RUNNER_TEMP/major-tag.err"); then
+              # Only a missing tag may be created; any other error must not skip the forward-only check
+              if ! grep -q 'HTTP 404' "$RUNNER_TEMP/major-tag.err"; then
+                cat "$RUNNER_TEMP/major-tag.err"
+                echo "::error::Could not read $MAJOR_TAG"
+                exit 1
+              fi
+              MOVE_MAJOR=true
+            else
+              read -r TYPE SHA <<< "$CURRENT"
+              # An annotated tag points at a tag object; follow it to the commit
+              if [ "$TYPE" = "tag" ]; then
+                SHA=$(gh api "repos/$REPO/git/tags/$SHA" --jq '.object.sha')
+              fi
+              # Forward only: the release commit must contain whatever the major tag points at now
+              STATUS=$(gh api "repos/$REPO/compare/$SHA...$GITHUB_SHA" --jq '.status')
+              if [ "$STATUS" != "ahead" ] && [ "$STATUS" != "identical" ]; then
+                echo "::error::$MAJOR_TAG points at $SHA, which $GITHUB_SHA does not contain ($STATUS); refusing to move it backwards or sideways"
+                exit 1
+              fi
+              MOVE_MAJOR=true
+            fi
+          fi
+
+          {
+            echo "TAG=$TAG"
+            echo "MAJOR_TAG=$MAJOR_TAG"
+            echo "MOVE_MAJOR=$MOVE_MAJOR"
+            if [[ "$VERSION" == *-* ]]; then echo "PRERELEASE=true"; else echo "PRERELEASE=false"; fi
+          } >> "$GITHUB_ENV"
+
+      - name: Create the version tag
+        run: |
+          gh api "repos/$REPO/git/refs" -f "ref=refs/tags/$TAG" -f "sha=$GITHUB_SHA" --silent
+          echo "TAG_CREATED=true" >> "$GITHUB_ENV"
+
+      - name: Publish the release
+        run: |
+          ARGS=(--repo "$REPO" --title "$TAG" --generate-notes --verify-tag)
+          if [ "$PRERELEASE" = "true" ]; then
+            ARGS+=(--prerelease)
+          fi
+          gh release create "$TAG" "${ARGS[@]}"
+
+      - name: Move the major version tag
+        if: env.MOVE_MAJOR == 'true'
+        run: |
+          if gh api "repos/$REPO/git/ref/tags/$MAJOR_TAG" --silent 2>/dev/null; then
+            gh api -X PATCH "repos/$REPO/git/refs/tags/$MAJOR_TAG" -f "sha=$GITHUB_SHA" -F force=true --silent
+          else
+            gh api "repos/$REPO/git/refs" -f "ref=refs/tags/$MAJOR_TAG" -f "sha=$GITHUB_SHA" --silent
+          fi
+          echo "✅ $MAJOR_TAG now points at $TAG ($GITHUB_SHA)"
+
+      # A run that created the version tag but failed afterwards would leave a tag pointing at an
+      # unreleased commit and block a retry of the same version, so remove what this run made. Only
+      # after this run created the tag: a tag that appeared since validation belongs to someone else.
+      - name: Clean up a failed release
+        if: failure() && env.TAG_CREATED == 'true'
+        run: |
+          if gh release view "$TAG" --repo "$REPO" > /dev/null 2>&1; then
+            gh release delete "$TAG" --repo "$REPO" --yes --cleanup-tag
+          else
+            gh api -X DELETE "repos/$REPO/git/refs/tags/$TAG" --silent || true
+          fi
+          echo "🧹 Removed $TAG so the release can be retried"

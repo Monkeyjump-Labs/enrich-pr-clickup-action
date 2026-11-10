@@ -1,3 +1,11 @@
 rules:
   unpinned-uses:
+    config:
+      policies:
+        # Monkeyjump-Labs' own shared workflows are trusted at their floating major tag;
+        # everything third-party stays pinned to a commit hash.
+        Monkeyjump-Labs/*: ref-pin
+        '*': hash-pin
+  # Prefers GitHub's newer `$/` self-reference over `./`; actionlint does not accept it yet.
+  self-repository:
     disable: true

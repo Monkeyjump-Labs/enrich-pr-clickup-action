@@ -1,4 +1,0 @@
---env DEFAULT_BRANCH=main
---env GITHUB_SHA=HEAD
---env VALIDATE_ALL_CODEBASE=true
--e .github/act-event.json

@@ -1,0 +1,113 @@
+name: Claude Code Review
+
+# Triggers/adapter only. Resolves the PR number and hands off to the shared
+# Monkeyjump-Labs/claude-review-action flow, which runs the code-review plugin,
+# posts the review as claude[bot], and stamps one ai-review:* verdict label.
+#
+# The shared flow reads two kinds of label on the PR:
+#   scope/surface | scope/small | scope/large — set by /go from its change type,
+#     mapped to a model and effort (defaults: sonnet:medium, sonnet:high, opus:high;
+#     an unlabelled PR is the default model at high).
+#   skip-ai-review — set by a person or an outside agent; no review runs.
+#
+# Repo-specific parts, and the only ones to edit: allowed_tools (scripts that exist
+# here) and system_prompt (this repository's review policy).
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+
+# A rapid series of pushes shouldn't stack up reviews — only review the latest state.
+concurrency:
+  group: ai-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+# Restrict the default GITHUB_TOKEN at the top level (checkov CKV2_GHA_1);
+# the job grants the narrower scopes it actually needs below.
+permissions: {}
+
+jobs:
+  review:
+    # Bot authors and skip-ai-review are also checked inside the shared workflow;
+    # checking here means a skipped PR never starts a runner.
+    if: |
+      github.event.pull_request.user.login != 'dependabot[bot]' &&
+      github.event.pull_request.user.login != 'claude[bot]' &&
+      github.event.pull_request.user.login != 'claude' &&
+      !contains(github.event.pull_request.labels.*.name, 'skip-ai-review')
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      # The shared flow posts as claude[bot] by exchanging this OIDC token for a
+      # Claude GitHub App token. Without it the run has no token at all.
+      id-token: write
+      # Required for comment cleanup, which reads each older comment's run via
+      # `gh api .../actions/runs/<id>/jobs` to decide whether it was a review.
+      # A called workflow's permissions INTERSECT with the caller's, so granting
+      # this inside claude-review-action is not enough — without it here the call
+      # 403s, the error is swallowed, every older comment reads as "not ours",
+      # and nothing is deleted. Also what the github_ci MCP server needs to install.
+      actions: read
+    uses: Monkeyjump-Labs/claude-review-action/.github/workflows/ai-review.yml@v2
+    with:
+      pr_number: ${{ github.event.pull_request.number }}
+      # Repo-specific tools only; the shared flow adds its base set (Bash(ls:*), Write).
+      allowed_tools: 'Bash(npm ci),Bash(npm test),Bash(npm run format:check)'
+      # This repository's review policy. Appended to the system prompt after the shared
+      # flow's own verdict instructions, so the verdict label is still stamped.
+      system_prompt: |
+        Everything below is this repository's review policy. Where it conflicts with the
+        code-review command's own instructions, this policy wins.
+
+        WHAT THIS REPOSITORY IS
+        A composite GitHub Action that other Monkeyjump-Labs repositories call with a
+        ClickUp API token, an optional ClickUp team ID and a GitHub token. Its code runs
+        inside actions/github-script and writes to the caller's pull requests (labels and
+        comments). The action.yml inputs and outputs, the #ticket reference syntax, the
+        label set (task tags, parent tags and the task type), the comment marker format
+        (<!-- clickup-ticket:<internal task id> -->), and the release workflow are
+        contracts that consumers pinned to the v2 major tag depend on.
+
+        SEVERITY IS A SEPARATE JUDGEMENT FROM CONFIDENCE
+        Give every surviving issue exactly one severity, judged only on the consequence of
+        shipping it:
+
+        - Critical: a secret exposed in logs or output, text from ClickUp or a PR executed
+          or interpolated into a command, or a change that deletes comments or labels the
+          action does not own.
+        - Major: a real defect that will be hit in normal use; a ClickUp outage or a bad
+          token mistaken for "no ticket linked", or a failed lookup that lets a still-valid
+          ticket comment be deleted; a breaking change to an input, output, the label set or
+          the comment marker without a major version; a workflow that can publish an untested
+          commit or move the major tag to the wrong commit.
+        - Minor: a real defect unlikely to be hit in practice, or a change that will cause
+          genuine confusion for the next person here.
+        - Note: everything else. Do not report Note-severity items at all.
+
+        Keep Critical and Major findings even at moderate confidence, 60 or above. Apply
+        the command's higher confidence bar to Minor only.
+
+        WHAT IS NOT A FINDING
+        - A missing, stale, or imperfectly worded code comment.
+        - A guard for a state the code or GitHub already rules out.
+        - Style or formatting; Prettier enforces it in CI.
+
+        OUTPUT FORMAT
+        The first line is exactly one of:
+
+        **Verdict: SHIP IT** when there is no Critical or Major finding.
+        **Verdict: CHANGES NEEDED** when there is at least one.
+
+        Then only the sections that have content:
+
+        ### Must fix before merge
+        Critical and Major findings, most severe first, each with its severity in brackets,
+        what happens if it ships, and a permalink.
+
+        ### Optional, non-blocking
+        Minor findings only, at most five.
+
+        Never invent or inflate a finding to avoid an empty review.
+    secrets:
+      # Org-level key.
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

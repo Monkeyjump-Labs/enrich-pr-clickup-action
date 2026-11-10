@@ -1,26 +1,25 @@
 # enrich-pr-clickup-action
 
-A GitHub Action to enrich a particular PR with Clickup labels and ticket context.
+A GitHub Action that enriches a pull request with the ClickUp tickets it refers to. Its Linear
+counterpart is [`enrich-pr-linear-action`](https://github.com/Monkeyjump-Labs/enrich-pr-linear-action).
 
-It does two things with the ClickUp tickets referenced by a PR:
+For every ClickUp ticket a PR refers to, it:
 
-1. Applies the tickets' ClickUp tags and task type as GitHub labels.
-2. Posts one PR comment per ticket summarizing it, so reviewers — including AI reviewers, which read
-   PR comments as context — can see the ticket without leaving the PR. Disable with
-   `post_ticket_comments: false`.
+1. Applies the ticket's ClickUp tags, its parent ticket's tags and its task type as GitHub labels.
+2. Posts one PR comment summarizing the ticket, so reviewers, including AI reviewers that read PR
+   comments as context, can see it without leaving the PR. Disable with `post_ticket_comments: false`.
 
-## Supported Ticket ID Formats
+## How tickets are found
 
-This action extracts ClickUp ticket IDs from your PR title and body. It supports:
+The action reads the PR title and body for a `#` followed by a ticket ID:
 
-- **Standard ClickUp IDs**: `#abc123def` (6+ alphanumeric characters)
-- **Custom ClickUp IDs**: `#MY-1`, `#HERO-4`, `#DEV-123` (PREFIX-NUMBER format)
+- **Standard ClickUp IDs**: `#86abc123` (6 or more letters and digits).
+- **Custom task IDs**: `#SMART-1234`, `#HERO-4` (PREFIX-NUMBER). These need the `clickup_team_id`
+  input. See [Custom task IDs](#custom-task-ids).
 
-> **Note:** Custom IDs require the `clickup_team_id` input. See [Using Custom Task IDs](#using-custom-task-ids) below.
+A ticket named more than once, or by both its custom ID and its internal ID, is handled once.
 
 ## Usage
-
-To use this action, add a GitHub Action to your repository that is similar to the below:
 
 ```yaml
 name: Sync ClickUp Labels to PR
@@ -29,98 +28,118 @@ on:
   pull_request:
     types: [opened, edited, synchronize]
 
-permissions:
-  contents: read
-  pull-requests: write
+permissions: {}
+
+concurrency:
+  group: clickup-sync-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   enrich_pr:
     name: Enrich PR
+    # Fork and Dependabot PRs get no repository secrets, so there is no ClickUp token to use
+    if: github.actor != 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
-      - uses: Monkeyjump-Labs/enrich-pr-clickup-action@v1
-        id: enrich_pr_with_clickup_info
-        name: Enrich PR with clickup information
+      - uses: Monkeyjump-Labs/enrich-pr-clickup-action@v2
         with:
           pr_number: ${{ github.event.pull_request.number }}
           clickup_api_token: ${{ secrets.CLICKUP_API_TOKEN }}
+          clickup_team_id: ${{ vars.CLICKUP_TEAM_ID }}
 ```
 
-That will trigger enrichment of your PR upon creation, editing, or synchronization.
+### Fork and Dependabot PRs
 
-## Using Custom Task IDs
+Skip them, as the example does. GitHub gives neither a fork PR nor a Dependabot PR the repository's
+Actions secrets, so `clickup_api_token` arrives empty. The action then can't look up any ticket. It
+warns, and with `fail_on_no_ticket` on (the default) the run fails with `No ClickUp Labels Found`.
 
-ClickUp's API does not support fetching tasks directly by custom ID (e.g., `ENG-123`). The direct `/api/v2/task/{task_id}` endpoint only accepts ClickUp's internal task IDs.
+### Custom task IDs
 
-To support custom task IDs, this action uses ClickUp's search endpoint, which requires a team/workspace ID to scope the search.
-
-### Setup for Custom IDs
-
-1. **Find your ClickUp Team ID**: Look at any ClickUp URL in your workspace. The team ID is the number after `/t/` in URLs like `https://app.clickup.com/1234567/...` — in this case, `1234567` is your team ID.
-
-2. **Add the team ID to your workflow**:
-
-```yaml
-- uses: Monkeyjump-Labs/enrich-pr-clickup-action@v1
-  with:
-    pr_number: ${{ github.event.pull_request.number }}
-    clickup_api_token: ${{ secrets.CLICKUP_API_TOKEN }}
-    clickup_team_id: '1234567' # Required for custom IDs like #ENG-123
-```
+ClickUp only resolves a custom task ID such as `SMART-1234` within a workspace, so custom IDs need
+`clickup_team_id`. The team ID is the number at the start of a ClickUp URL: in
+`https://app.clickup.com/1234567/...` it is `1234567`. The team ID also turns on task type labels.
 
 ### Inputs
 
-| Input                       | Required | Description                                                       |
-| --------------------------- | -------- | ----------------------------------------------------------------- |
-| `clickup_api_token`         | Yes      | ClickUp API token with access to retrieve ticket information      |
-| `clickup_team_id`           | No\*     | ClickUp team/workspace ID. \*Required if using custom task IDs    |
-| `github_token`              | No       | GitHub token (defaults to `${{ github.token }}`)                  |
-| `pr_number`                 | Yes      | The PR number to apply labels to                                  |
-| `fail_on_no_ticket`         | No       | Fail if no ticket found (default: `true`)                         |
-| `post_ticket_comments`      | No       | Post/refresh a PR comment per linked ticket (default: `true`)     |
-| `comment_description_limit` | No       | Ticket description characters before truncation (default: `4000`) |
+| Input                       | Required | Default               | Description                                                              |
+| --------------------------- | -------- | --------------------- | ------------------------------------------------------------------------ |
+| `clickup_api_token`         | Yes      |                       | ClickUp API token that can read the linked tickets                       |
+| `clickup_team_id`           | No\*     |                       | ClickUp workspace ID. \*Needed for custom task IDs and task type labels  |
+| `github_token`              | No       | `${{ github.token }}` | Token used to read the PR and write labels and comments                  |
+| `pr_number`                 | Yes      |                       | The PR to enrich                                                         |
+| `fail_on_no_ticket`         | No       | `true`                | Fail when the PR names no ticket, or its tickets give no labels          |
+| `post_ticket_comments`      | No       | `true`                | Post and refresh one PR comment per linked ticket                        |
+| `comment_description_limit` | No       | `4000`                | Ticket description characters to include before truncating (max `60000`) |
 
-## Ticket Context Comments
+The action has no outputs.
 
-With `post_ticket_comments` enabled (the default), the action posts one comment per linked ticket
-containing its heading, ClickUp URL, status, task type, priority, assignees, due date, list, tags,
-parent ticket, and description.
+### Labels
 
-The comment carries a hidden marker — `<!-- clickup-ticket:<internal task id> -->` on its first line
-— which makes the behavior idempotent:
+Each linked ticket contributes its ClickUp tags, its parent ticket's tags, and its task type in lower
+case (for example `bug`). A generic type (`Task` or `Item`) falls back to the parent's type and is
+otherwise left out. Labels that don't exist yet are created by GitHub. A name longer than GitHub's
+50-character limit is skipped.
 
-- **Never duplicated.** A ticket that already has a comment gets that comment rewritten in place, so
-  pushes and PR description edits refresh the context instead of stacking up comments.
-- **One comment per ticket**, keyed by ClickUp's internal task ID. Referencing the same task twice
-  (say `#ENG-123` and its raw ID) yields a single comment.
-- **Nothing posted when no ticket is linked**, and comments for tickets that are no longer referenced
-  on the PR are removed. Cleanup is skipped whenever any ref failed to resolve, so a ClickUp API
-  failure can't delete a still-valid comment.
+With `fail_on_no_ticket` on, the step fails when the PR names no ticket (`No ClickUp Ticket Linked`)
+or when its tickets give no labels (`No ClickUp Labels Found`). Labels and comments are applied before
+the step fails.
 
-Ticket text is inserted as data only — it is never interpolated into a command — and the comment
-labels itself as reference material rather than instructions, since AI reviewers ingest PR comments.
+## Ticket context comments
 
-Posting comments needs `pull-requests: write`, which the usage example above already grants.
+With `post_ticket_comments` on (the default), each linked ticket gets one comment with its heading,
+link, status, task type, priority, assignees, due date, list, tags, parent ticket and description.
 
-> **Note:** AI review workflows typically read PR comments once, when the review starts. If a review
-> is triggered by the same `pull_request` event as this action, it may begin before the comment
-> exists; the comment will be present for any subsequent review of that PR.
+The comment begins with a hidden marker, `<!-- clickup-ticket:<internal task id> -->`. The marker
+keeps the comments idempotent:
 
-## Running GitHub Actions locally
+- **No duplicates.** A ticket that already has a comment gets that comment rewritten in place, so
+  pushes and PR description edits refresh the context instead of adding more comments.
+- **One comment per ticket**, keyed by ClickUp's internal task ID. `#SMART-123` and the same task's
+  internal ID produce one comment.
+- **Unlinked tickets are cleaned up.** A comment for a ticket the PR no longer refers to is removed.
+  A failed ClickUp lookup never removes a comment: a failed internal-ID lookup keeps that ticket's
+  comment, and a failed custom-ID lookup keeps every comment, because it could name any task.
 
-You can run registered GitHub Actions locally using [act](https://github.com/nektos/act), which simulates GitHub Actions on your machine.
+Ticket text is inserted as data only and is never interpolated into a command. The comment also
+labels itself as reference material rather than instructions, because AI reviewers read PR comments.
 
-### Prerequisites
+> **Note:** AI review workflows usually read PR comments once, when the review starts. A review
+> triggered by the same `pull_request` event as this action may start before the comment exists.
+> The comment is there for any later review of that PR.
 
-- Install [act](https://github.com/nektos/act#installation)
-- Docker must be running
+## Releasing
 
-### Running the Linter
-
-From the repository root, run:
+Releases are cut by the **Release** workflow, never by pushing tags by hand:
 
 ```bash
-act pull_request
+gh workflow run release.yml -f version=2.1.0
 ```
 
-The repository includes an `.actrc` configuration file that automatically sets the required environment variables and event payload for the linter to work correctly.
+The workflow runs the full CI suite against `main`, then:
+
+1. Tags that commit as `v2.1.0`.
+2. Publishes a GitHub release with generated notes.
+3. Moves the floating `v2` tag to it, so consumers pinned to `@v2` get the release. The tag only moves
+   forward: it stays put when a newer `v2.x.y` exists, and the run stops before tagging when the
+   release commit doesn't contain the commit `v2` points at now.
+
+A pre-release version such as `2.2.0-rc.1` is published as a pre-release and leaves `v2` alone. If a
+run fails after creating the tag, it deletes the tag and release so the same version can be retried.
+Bump the major version for any breaking change to an input, the label set or the comment marker.
+
+## Development
+
+```bash
+npm ci
+npm test              # node:test unit suite with coverage
+npm run format:check  # prettier
+```
+
+The action is a composite action that runs [`src/enrich-pr.js`](src/enrich-pr.js) inside
+`actions/github-script`. It has no runtime dependencies, so there is no build step and no `dist/` to
+commit. CI runs the unit suite, Prettier, `actionlint` and `zizmor`, and a smoke test workflow runs the
+action from the PR's own checkout against that PR.

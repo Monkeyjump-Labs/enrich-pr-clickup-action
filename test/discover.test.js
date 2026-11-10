@@ -144,4 +144,12 @@ describe('discoverTickets', () => {
     });
     assert.equal(clickup.requests.filter((r) => r.url.pathname.endsWith('/par999')).length, 1);
   });
+
+  it('does not fetch a parent again when it is itself linked', async () => {
+    const { clickup, tickets } = await discover('#par999 #aaa111', {
+      tasks: { aaa111: task('aaa111', { parent: 'par999' }), par999: task('par999') },
+    });
+    assert.equal(clickup.requests.filter((r) => r.url.pathname.endsWith('/par999')).length, 1);
+    assert.equal(tickets[1].parent.id, 'par999');
+  });
 });

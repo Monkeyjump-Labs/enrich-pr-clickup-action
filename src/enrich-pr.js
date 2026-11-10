@@ -40,7 +40,8 @@ function collectLabels(tickets, core) {
       if (!name) continue;
       const key = name.toLowerCase();
       if (seen.has(key)) continue;
-      if (name.length > MAX_LABEL_LENGTH) {
+      // GitHub counts characters, not UTF-16 code units, so an emoji counts once
+      if (Array.from(name).length > MAX_LABEL_LENGTH) {
         if (core)
           core.warning(`Skipping label '${name}': GitHub label names are at most ${MAX_LABEL_LENGTH} characters`);
         seen.add(key);

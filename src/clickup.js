@@ -12,15 +12,16 @@ class ClickUpApiError extends Error {
   }
 }
 
-// Only a 404, or a "not found" error that is not an auth error, means the task does not exist.
-// ClickUp reports a bad or revoked token as OAUTH_019 "Oauth token not found", and a workspace the
-// token can't see as OAUTH_027, so neither may be read as a missing task.
+// Only a 404, or an error saying the task itself is not found, that is not an auth error means the
+// task does not exist. ClickUp reports a bad or revoked token as OAUTH_019 "Oauth token not found",
+// and a workspace the token can't see as OAUTH_027, so neither may be read as a missing task; nor
+// may "Team not found" from a wrong clickup_team_id.
 function classifyError(status, payload) {
   const body = payload && typeof payload === 'object' ? payload : {};
   const code = typeof body.ECODE === 'string' ? body.ECODE : undefined;
   const text = typeof body.err === 'string' ? body.err : '';
   const authError = Boolean(code && code.startsWith('OAUTH_'));
-  const notFound = status === 404 || (!authError && /not found/i.test(text));
+  const notFound = !authError && (status === 404 || /\btask not found\b/i.test(text));
   const detail = [text || `HTTP ${status}`, code].filter(Boolean).join(' — ');
   return new ClickUpApiError(`ClickUp API error: ${detail}`, { status, code, notFound });
 }
@@ -66,25 +67,29 @@ function taskPath(id) {
   return `task/${encodeURIComponent(id)}`;
 }
 
-// A task the response describes, or null for anything that is not one.
+// The task the response describes. A successful response that is not a task is a failed lookup,
+// never a missing ticket, so it can't cost a still-linked ticket its comment.
 function asTask(payload) {
-  return payload && typeof payload === 'object' && payload.id ? payload : null;
+  if (payload && typeof payload === 'object' && payload.id) return payload;
+  throw new ClickUpApiError('ClickUp returned a response that is not a task');
 }
 
 // Returns null when ClickUp says the task does not exist; throws ClickUpApiError for anything that
 // means the lookup itself failed.
 async function lookupTask(client, path, params) {
+  let payload;
   try {
-    return asTask(await client.request(path, params));
+    payload = await client.request(path, params);
   } catch (error) {
     if (error instanceof ClickUpApiError && error.notFound) return null;
     throw error;
   }
+  return asTask(payload);
 }
 
 // Fetches a task by its internal ID.
 function fetchTask(client, id) {
-  return lookupTask(client, taskPath(id));
+  return lookupTask(client, taskPath(id), { include_markdown_description: 'true' });
 }
 
 // Fetches a task by its custom ID (SMART-1234), which ClickUp only resolves within a workspace.
@@ -94,6 +99,7 @@ function fetchTaskByCustomId(client, customId, teamId) {
     team_id: teamId,
     include_closed: 'true',
     include_subtasks: 'true',
+    include_markdown_description: 'true',
   });
 }
 

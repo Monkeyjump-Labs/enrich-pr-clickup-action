@@ -22,6 +22,11 @@ describe('classifyError', () => {
     assert.equal(classifyError(400, NOT_FOUND).notFound, true);
   });
 
+  it('never reads a missing workspace or list as a missing task', () => {
+    assert.equal(classifyError(400, { err: 'Team not found', ECODE: 'TEAM_015' }).notFound, false);
+    assert.equal(classifyError(500, { err: 'List not found' }).notFound, false);
+  });
+
   it('never reads an auth error as a missing task, even one that says "not found"', () => {
     const error = classifyError(401, AUTH_ERROR);
     assert.equal(error.notFound, false);
@@ -29,6 +34,7 @@ describe('classifyError', () => {
     assert.match(error.message, /Oauth token not found — OAUTH_019/);
     assert.equal(classifyError(401, { err: 'Team not authorized', ECODE: 'OAUTH_027' }).notFound, false);
     assert.equal(classifyError(500, null).notFound, false);
+    assert.equal(classifyError(404, AUTH_ERROR).notFound, false);
   });
 });
 
@@ -94,8 +100,15 @@ describe('fetchTask', () => {
     await assert.rejects(fetchTask(client, 'abc123'), { code: 'OAUTH_019' });
   });
 
-  it('returns null for a response that is not a task', async () => {
-    assert.equal(await fetchTask(clientFor(jsonResponse({})), 'abc123'), null);
+  it('throws for a successful response that is not a task, rather than reading it as missing', async () => {
+    await assert.rejects(fetchTask(clientFor(jsonResponse({})), 'abc123'), { notFound: false });
+  });
+
+  it('asks for the markdown description', async () => {
+    const clickup = fakeClickUp({ tasks: { abc123: task('abc123') } });
+    const client = createClickUpClient({ apiToken: 'pk', fetchImpl: clickup.fetchImpl });
+    await fetchTask(client, 'abc123');
+    assert.equal(clickup.requests[0].url.searchParams.get('include_markdown_description'), 'true');
   });
 });
 
@@ -107,6 +120,7 @@ describe('fetchTaskByCustomId', () => {
     const params = clickup.requests[0].url.searchParams;
     assert.equal(params.get('custom_task_ids'), 'true');
     assert.equal(params.get('team_id'), '42');
+    assert.equal(params.get('include_markdown_description'), 'true');
     assert.equal(await fetchTaskByCustomId(client, 'SMART-2', '42'), null);
   });
 

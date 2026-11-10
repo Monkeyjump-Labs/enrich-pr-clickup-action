@@ -123,6 +123,12 @@ describe('collectLabels', () => {
     assert.deepEqual(collectLabels(tickets), ['backend', 'Urgent', 'epic', 'bug']);
   });
 
+  it('counts an emoji as one character toward the length limit', () => {
+    const emoji = '🔥'.repeat(30);
+    const tickets = [{ task: task('a', { tags: tags(emoji) }), parent: null, type: '' }];
+    assert.deepEqual(collectLabels(tickets), [emoji]);
+  });
+
   it('warns once about each over-long name it drops', () => {
     const long = 'x'.repeat(51);
     const tickets = [{ task: task('a', { tags: tags(long, long.toUpperCase()) }), parent: null, type: '' }];

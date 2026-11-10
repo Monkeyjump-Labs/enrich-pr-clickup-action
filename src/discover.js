@@ -94,6 +94,8 @@ async function discoverTickets(client, { refs, teamId, types = new Map(), core }
       continue;
     }
     seen.add(task.id);
+    // A linked ticket that is also another linked ticket's parent is fetched once
+    if (!parents.get(task.id)) parents.set(task.id, task);
     core.info(
       `✅ Found ClickUp ticket ${task.custom_id || task.id}: ${task.name} (https://app.clickup.com/t/${task.id})`,
     );

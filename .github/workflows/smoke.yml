@@ -18,7 +18,7 @@ jobs:
   # the action reports as a warning, and the run still passes.
   smoke:
     name: Smoke test the action
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: read

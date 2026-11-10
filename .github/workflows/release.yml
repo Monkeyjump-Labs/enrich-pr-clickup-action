@@ -97,7 +97,9 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Create the version tag
-        run: gh api "repos/$REPO/git/refs" -f "ref=refs/tags/$TAG" -f "sha=$GITHUB_SHA" --silent
+        run: |
+          gh api "repos/$REPO/git/refs" -f "ref=refs/tags/$TAG" -f "sha=$GITHUB_SHA" --silent
+          echo "TAG_CREATED=true" >> "$GITHUB_ENV"
 
       - name: Publish the release
         run: |
@@ -118,9 +120,10 @@ jobs:
           echo "✅ $MAJOR_TAG now points at $TAG ($GITHUB_SHA)"
 
       # A run that created the version tag but failed afterwards would leave a tag pointing at an
-      # unreleased commit and block a retry of the same version, so remove what this run made.
+      # unreleased commit and block a retry of the same version, so remove what this run made. Only
+      # after this run created the tag: a tag that appeared since validation belongs to someone else.
       - name: Clean up a failed release
-        if: failure() && env.TAG != ''
+        if: failure() && env.TAG_CREATED == 'true'
         run: |
           if gh release view "$TAG" --repo "$REPO" > /dev/null 2>&1; then
             gh release delete "$TAG" --repo "$REPO" --yes --cleanup-tag

@@ -1,0 +1,17 @@
+{
+  "name": "enrich-pr-clickup-action",
+  "private": true,
+  "description": "GitHub Action that enriches a PR with its linked ClickUp tickets.",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test --experimental-test-coverage",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "prettier": "3.9.10"
+  }
+}

@@ -70,7 +70,7 @@ describe('createClickUpClient', () => {
       },
     };
     await assert.rejects(clientFor(html).request('task/x'), /non-JSON response \(HTTP 502\)/);
-    await assert.rejects(clientFor({ ...html, status: 404 }).request('task/x'), (error) => error.notFound);
+    await assert.rejects(clientFor({ ...html, status: 404 }).request('task/x'), { notFound: false });
   });
 
   it('treats an err field as a failure even on HTTP 200', async () => {

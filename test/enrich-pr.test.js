@@ -122,6 +122,15 @@ describe('collectLabels', () => {
     ];
     assert.deepEqual(collectLabels(tickets), ['backend', 'Urgent', 'epic', 'bug']);
   });
+
+  it('warns once about each over-long name it drops', () => {
+    const long = 'x'.repeat(51);
+    const tickets = [{ task: task('a', { tags: tags(long, long.toUpperCase()) }), parent: null, type: '' }];
+    const core = fakeCore();
+    assert.deepEqual(collectLabels(tickets, core), []);
+    assert.equal(core.warnings.length, 1);
+    assert.match(core.warnings[0], /at most 50 characters/);
+  });
 });
 
 describe('applyLabels', () => {
@@ -145,12 +154,11 @@ describe('applyLabels', () => {
     );
   });
 
-  it('fails when a lone label is rejected or a retry hits a non-validation error', async () => {
+  it('only warns when a lone label is rejected, and fails when a retry hits a non-validation error', async () => {
     const lone = fakeGithub({ rejectLabel: () => true });
-    await assert.rejects(
-      applyLabels({ github: lone.github, owner: 'o', repo: 'r', prNumber: 7, labels: ['bad'], core: fakeCore() }),
-      { status: 422 },
-    );
+    const core = fakeCore();
+    await applyLabels({ github: lone.github, owner: 'o', repo: 'r', prNumber: 7, labels: ['bad'], core });
+    assert.match(core.warnings[1], /Could not apply label 'bad'/);
 
     const { github } = fakeGithub();
     let call = 0;
@@ -309,6 +317,24 @@ describe('run', () => {
       clickup: { failing: ['SMART-1', 'types'] },
     });
     assert.match(core.failures[0], /No ClickUp Labels Found - a ClickUp lookup failed/);
+    assert.equal(state.comments.length, 1);
+  });
+
+  it('says a lookup failed when only the task types could not be loaded', async () => {
+    const { core } = await enrich({
+      pr: { title: '#abc123' },
+      clickup: { tasks: { abc123: task('abc123', { custom_item_id: 2 }) }, failing: ['types'] },
+    });
+    assert.match(core.failures[0], /No ClickUp Labels Found - a ClickUp lookup failed/);
+  });
+
+  it('keeps the comment of an upper-case internal ref whose lookup failed', async () => {
+    const { state } = await enrich({
+      pr: { title: '#ABC123' },
+      comments: [{ body: `${markerFor('abc123')}\nkeep me` }],
+      clickup: { failing: ['ABC123'] },
+      inputs: { failOnNoTicket: false },
+    });
     assert.equal(state.comments.length, 1);
   });
 

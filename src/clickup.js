@@ -47,7 +47,7 @@ function createClickUpClient({ apiToken, fetchImpl = globalThis.fetch, baseUrl =
     try {
       payload = await response.json();
     } catch {
-      if (response.status === 404) throw classifyError(404, null);
+      // Even a 404 here is a proxy or outage page rather than ClickUp saying the task is gone
       throw new ClickUpApiError(`ClickUp returned a non-JSON response (HTTP ${response.status})`, {
         status: response.status,
       });
@@ -71,32 +71,30 @@ function asTask(payload) {
   return payload && typeof payload === 'object' && payload.id ? payload : null;
 }
 
-// Fetches a task by its internal ID. Returns null when ClickUp says it does not exist; throws
-// ClickUpApiError for anything that means the lookup itself failed.
-async function fetchTask(client, id) {
+// Returns null when ClickUp says the task does not exist; throws ClickUpApiError for anything that
+// means the lookup itself failed.
+async function lookupTask(client, path, params) {
   try {
-    return asTask(await client.request(taskPath(id)));
+    return asTask(await client.request(path, params));
   } catch (error) {
     if (error instanceof ClickUpApiError && error.notFound) return null;
     throw error;
   }
 }
 
+// Fetches a task by its internal ID.
+function fetchTask(client, id) {
+  return lookupTask(client, taskPath(id));
+}
+
 // Fetches a task by its custom ID (SMART-1234), which ClickUp only resolves within a workspace.
-async function fetchTaskByCustomId(client, customId, teamId) {
-  try {
-    return asTask(
-      await client.request(taskPath(customId), {
-        custom_task_ids: 'true',
-        team_id: teamId,
-        include_closed: 'true',
-        include_subtasks: 'true',
-      }),
-    );
-  } catch (error) {
-    if (error instanceof ClickUpApiError && error.notFound) return null;
-    throw error;
-  }
+function fetchTaskByCustomId(client, customId, teamId) {
+  return lookupTask(client, taskPath(customId), {
+    custom_task_ids: 'true',
+    team_id: teamId,
+    include_closed: 'true',
+    include_subtasks: 'true',
+  });
 }
 
 // The workspace's custom task types, as a map of type ID (a string) to type name.

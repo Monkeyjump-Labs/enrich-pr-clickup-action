@@ -34,7 +34,7 @@ describe('resolveType', () => {
 describe('loadTaskTypes', () => {
   it('skips the lookup without a team ID', async () => {
     const core = fakeCore();
-    assert.equal((await loadTaskTypes({}, '', core)).size, 0);
+    assert.deepEqual(await loadTaskTypes({}, '', core), { types: new Map(), failed: false });
     assert.match(core.logs[0], /task type detection disabled/);
   });
 
@@ -42,14 +42,16 @@ describe('loadTaskTypes', () => {
     const clickup = fakeClickUp({ failing: ['types'] });
     const client = createClickUpClient({ apiToken: 'pk', fetchImpl: clickup.fetchImpl });
     const core = fakeCore();
-    assert.equal((await loadTaskTypes(client, '42', core)).size, 0);
+    assert.deepEqual(await loadTaskTypes(client, '42', core), { types: new Map(), failed: true });
     assert.match(core.warnings[0], /Could not load ClickUp task types/);
   });
 
   it('loads the types', async () => {
     const clickup = fakeClickUp({ types: [{ id: 2, name: 'Bug' }] });
     const client = createClickUpClient({ apiToken: 'pk', fetchImpl: clickup.fetchImpl });
-    assert.equal((await loadTaskTypes(client, '42', fakeCore())).get('2'), 'Bug');
+    const { types, failed } = await loadTaskTypes(client, '42', fakeCore());
+    assert.equal(types.get('2'), 'Bug');
+    assert.equal(failed, false);
   });
 });
 
@@ -120,7 +122,7 @@ describe('discoverTickets', () => {
   });
 
   it('keeps a ticket whose parent cannot be read, without the parent', async () => {
-    const { tickets, failed, core } = await discover('#abc123', {
+    const { tickets, failed, lookupFailed, core } = await discover('#abc123', {
       tasks: { abc123: task('abc123', { parent: 'par999', custom_item_id: 2 }) },
       failing: ['par999'],
     });
@@ -128,6 +130,7 @@ describe('discoverTickets', () => {
     assert.equal(tickets[0].parent, null);
     assert.equal(tickets[0].type, 'bug');
     assert.equal(failed, false);
+    assert.equal(lookupFailed, true);
     assert.match(core.warnings[0], /Could not look up parent ticket par999/);
   });
 

@@ -32,14 +32,20 @@ function readInputs(env) {
 
 // Each ticket's tags, its parent's tags and its task type, de-duplicated the way GitHub compares
 // label names (case-insensitively), keeping the first spelling seen.
-function collectLabels(tickets) {
+function collectLabels(tickets, core) {
   const seen = new Set();
   const labels = [];
   for (const { task, parent, type } of tickets) {
     for (const name of [...tagNames(task), ...tagNames(parent), type]) {
       if (!name) continue;
       const key = name.toLowerCase();
-      if (seen.has(key) || name.length > MAX_LABEL_LENGTH) continue;
+      if (seen.has(key)) continue;
+      if (name.length > MAX_LABEL_LENGTH) {
+        if (core)
+          core.warning(`Skipping label '${name}': GitHub label names are at most ${MAX_LABEL_LENGTH} characters`);
+        seen.add(key);
+        continue;
+      }
       seen.add(key);
       labels.push(name);
     }
@@ -54,7 +60,7 @@ async function applyLabels({ github, owner, repo, prNumber, labels, core }) {
     await github.rest.issues.addLabels({ owner, repo, issue_number: prNumber, labels });
     return;
   } catch (error) {
-    if (error.status !== 422 || labels.length === 1) throw error;
+    if (error.status !== 422) throw error;
     core.warning(`GitHub rejected the labels as a batch (${error.message}); applying them one at a time`);
   }
   for (const label of labels) {
@@ -116,7 +122,7 @@ async function syncTicketComments({
   for (const comment of ours) {
     if (kept.has(comment.id)) continue;
     const duplicate = linkedIds.has(comment.taskId);
-    if (!duplicate && (failed || protectedIds.has(comment.taskId))) {
+    if (!duplicate && (failed || protectedIds.has(comment.taskId.toLowerCase()))) {
       core.info(`   → Keeping comment ${comment.id}: a ClickUp lookup failed, so it may still be linked`);
       continue;
     }
@@ -151,7 +157,8 @@ async function run({ github, context, core, inputs, fetchImpl }) {
   }
 
   const client = createClickUpClient({ apiToken: inputs.clickupApiToken, fetchImpl });
-  const types = refs.length > 0 ? await loadTaskTypes(client, inputs.clickupTeamId, core) : new Map();
+  const { types, failed: typesFailed } =
+    refs.length > 0 ? await loadTaskTypes(client, inputs.clickupTeamId, core) : { types: new Map(), failed: false };
   const { tickets, protectedIds, failed, lookupFailed } = await discoverTickets(client, {
     refs,
     teamId: inputs.clickupTeamId,
@@ -160,7 +167,7 @@ async function run({ github, context, core, inputs, fetchImpl }) {
   });
 
   // Labels first, so a failed comment call can't also cost the PR its labels
-  const labels = collectLabels(tickets);
+  const labels = collectLabels(tickets, core);
   if (labels.length > 0) {
     core.info(`🏷️ Applying labels to PR #${prNumber}: ${labels.join(', ')}`);
     await applyLabels({ github, owner, repo, prNumber, labels, core });
@@ -187,7 +194,7 @@ async function run({ github, context, core, inputs, fetchImpl }) {
     if (inputs.failOnNoTicket) core.setFailed('❌ No ClickUp Ticket Linked');
     else core.warning('No ClickUp ticket is linked to this PR');
   } else if (labels.length === 0 && inputs.failOnNoTicket) {
-    const hint = lookupFailed ? ' - a ClickUp lookup failed, see the warnings above' : '';
+    const hint = lookupFailed || typesFailed ? ' - a ClickUp lookup failed, see the warnings above' : '';
     core.setFailed(`❌ No ClickUp Labels Found${hint}`);
   }
 }

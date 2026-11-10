@@ -5,22 +5,23 @@ const { fetchCustomTaskTypes, fetchTask, fetchTaskByCustomId } = require('./clic
 // Task types that say nothing about the work, so they never become a label.
 const GENERIC_TYPES = new Set(['task', 'item']);
 
-// The workspace's custom task types, or an empty map when there is no team ID or the lookup fails.
-// Types only add a label, so a failure here is a warning and never stops the run.
+// The workspace's custom task types, as { types, failed }: types is empty when there is no team ID
+// or the lookup fails. Types only add a label, so a failure here is a warning and never stops the
+// run; `failed` lets the caller say why a ticket ended up with no labels.
 async function loadTaskTypes(client, teamId, core) {
   if (!teamId) {
     core.info('⚠️ No clickup_team_id provided - task type detection disabled');
-    return new Map();
+    return { types: new Map(), failed: false };
   }
   core.info(`🔍 Fetching custom task types for team ${teamId}...`);
   try {
     const types = await fetchCustomTaskTypes(client, teamId);
     for (const [id, name] of types) core.info(`   → Registered type: ${name} (id: ${id})`);
     core.info(`✅ Loaded ${types.size} custom task types`);
-    return types;
+    return { types, failed: false };
   } catch (error) {
     core.warning(`Could not load ClickUp task types, so no type label is added: ${error.message}`);
-    return new Map();
+    return { types: new Map(), failed: true };
   }
 }
 
@@ -43,7 +44,7 @@ function resolveType(task, parent, types) {
 // - protectedIds: internal IDs whose lookup failed; their existing comments must be kept.
 // - failed: a custom ref could not be looked up, so it may name any task and no comment for an
 //   unlisted task may be removed.
-// - lookupFailed: any lookup failed, for reporting.
+// - lookupFailed: any lookup failed, a parent's included, for reporting.
 // A lookup that fails for any reason other than "no such task" is never read as an unlinked ticket.
 async function discoverTickets(client, { refs, teamId, types = new Map(), core }) {
   const tickets = [];
@@ -76,7 +77,8 @@ async function discoverTickets(client, { refs, teamId, types = new Map(), core }
         task = await fetchTask(client, ref.id);
       } catch (error) {
         core.warning(`Could not look up ClickUp ticket ${ref.id}: ${error.message}`);
-        protectedIds.add(ref.id);
+        // Internal IDs are lower case; the ref is as written on the PR
+        protectedIds.add(ref.id.toLowerCase());
         lookupFailed = true;
         continue;
       }
@@ -106,6 +108,7 @@ async function discoverTickets(client, { refs, teamId, types = new Map(), core }
         } catch (error) {
           core.warning(`Could not look up parent ticket ${task.parent} of ${ref.id}: ${error.message}`);
           parents.set(task.parent, null);
+          lookupFailed = true;
         }
       }
       parent = parents.get(task.parent);

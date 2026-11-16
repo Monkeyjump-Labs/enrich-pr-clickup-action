@@ -1,0 +1,305 @@
+name: Claude Code Review
+
+# Reviews every pull request with Claude (anthropics/claude-code-action) and posts the
+# review as a single claude[bot] comment.
+#
+# Why this is a standalone file and not a call to the shared flow: this repository is
+# PUBLIC, and GitHub does not let a public repository call a reusable workflow that lives
+# in an internal one. Monkeyjump-Labs/claude-review-action is internal, so it is out of
+# reach. This file carries over the parts of that flow that decide whether a review
+# actually happens: a loud failure when no credential is set, background tasks disabled,
+# a tool policy that allows by tool name and blocks by command, and a review policy.
+#
+# Repo-specific parts, and the only ones to edit: REVIEW_POLICY in "Build system prompt",
+# and the model/effort table in "Read review labels" when the models change.
+#
+# Labels this workflow reads (the /go skill's init.sh creates them on the repo):
+#
+#   scope/surface | scope/small | scope/large
+#       Set by /go from the change type it ran, and mapped to a model and an effort
+#       level. No scope label gets the most expensive setting: an unlabelled PR is
+#       reviewed harder, never softer.
+#   skip-ai-review
+#       Set by a person or an outside agent. The review does not run at all.
+
+on:
+  pull_request:
+    # `labeled` is here so the scope/* label /go attaches right after opening restarts the
+    # review at the right size, and so adding skip-ai-review cancels a review in flight.
+    # `unlabeled` is deliberately absent: with track_progress, claude-code-action@v1
+    # rejects that event and the step fails. After lifting skip-ai-review, push to the PR
+    # to start a review.
+    types: [opened, synchronize, ready_for_review, reopened, labeled]
+    # No `paths` filter, deliberately. The risk here is not in a source tree: it is the
+    # bash embedded in action.yml, and the README that tells consumers which inputs
+    # exist. A filter to code extensions would review neither.
+
+# Restrict the default GITHUB_TOKEN at the top level (checkov CKV2_GHA_1);
+# each job grants the narrower scopes it actually needs.
+permissions: {}
+
+jobs:
+  claude-review:
+    # Fork PRs are skipped: GitHub withholds secrets from them, so no review could run,
+    # and in a public repository a fork PR is the one an outsider controls. Closed PRs,
+    # drafts, bot authors, and events sent by a bot other than claude[bot] (which
+    # claude-code-action rejects) are skipped too. A `labeled` event counts only for a
+    # scope/* label or skip-ai-review; the second one runs just far enough to cancel a
+    # review in flight, then "Read review labels" sees the label and stops. The payload
+    # label check is stale on `opened` (see "Read review labels") but free on later pushes.
+    if: |
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.state == 'open' &&
+      !github.event.pull_request.draft &&
+      github.event.pull_request.user.login != 'dependabot[bot]' &&
+      github.event.pull_request.user.login != 'claude[bot]' &&
+      github.event.pull_request.user.login != 'claude' &&
+      (github.event.sender.type != 'Bot' || github.event.sender.login == 'claude[bot]') &&
+      (
+        github.event.action != 'labeled' ||
+        startsWith(github.event.label.name, 'scope/') ||
+        github.event.label.name == 'skip-ai-review'
+      ) &&
+      (
+        !contains(github.event.pull_request.labels.*.name, 'skip-ai-review') ||
+        github.event.label.name == 'skip-ai-review'
+      )
+    # A rapid series of pushes shouldn't stack up reviews — only review the latest state.
+    # Job-level, not workflow-level: job concurrency applies after `if`, so an event the
+    # `if` filters out (an unrelated label, say) cannot cancel a review already running.
+    concurrency:
+      group: claude-review-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      # Lets the reviewer read this PR's check runs and a failing job's log, and lets the
+      # cleanup step tell which older comments came from runs of this workflow.
+      actions: read
+      # Required. The action exchanges this OIDC token for a Claude GitHub App token so
+      # the review posts as claude[bot]. Without it, comments post as github-actions[bot],
+      # use_sticky_comment stops finding its own comment, and the cleanup step (which
+      # matches claude[bot]) deletes nothing.
+      id-token: write
+
+    steps:
+      # Read the labels LIVE, not from the event payload. `gh pr create --label` creates
+      # the PR and then attaches the label in a second API call, and the `opened` event
+      # fires in between — so on the run that matters most the payload has no labels.
+      - name: Read review labels
+        id: labels
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          # Fail OPEN: a transient gh error must not cost the PR its review.
+          if ! labels=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json labels --jq '.labels[].name'); then
+            echo "::warning::could not read PR labels — reviewing as unlabelled"
+            labels=""
+          fi
+          echo "labels: $(echo "$labels" | paste -sd, -)"
+          if grep -qx 'skip-ai-review' <<<"$labels"; then
+            echo "skip-ai-review is set — not reviewing"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # ADAPT THIS if the models change. The labels never do. Checked heaviest first,
+          # so a PR carrying two scope labels gets the more thorough review.
+          if grep -qx 'scope/large' <<<"$labels"; then
+            model=opus;   effort=high
+          elif grep -qx 'scope/small' <<<"$labels"; then
+            model=sonnet; effort=high
+          elif grep -qx 'scope/surface' <<<"$labels"; then
+            model=sonnet; effort=medium
+          else
+            model=opus;   effort=high    # no scope label: reviewed harder, never softer
+          fi
+          echo "model=$model effort=$effort"
+          {
+            echo "skip=false"
+            echo "model=$model"
+            echo "effort=$effort"
+          } >> "$GITHUB_OUTPUT"
+
+      # Without a credential, claude-code-action does not fail: it reports success in
+      # ~20s, logs `outcome=skipped;duration_ms=0`, and posts nothing. Fail loudly instead,
+      # so a missing secret is a red check rather than a green one that reviewed nothing.
+      - name: Require a review credential
+        if: steps.labels.outputs.skip != 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::error::ANTHROPIC_API_KEY is not available to this repository, so no review can run. Set it as a repository secret, or add this repository to the organization secret's selected repositories."
+            exit 1
+          fi
+
+      - name: Checkout repository
+        if: steps.labels.outputs.skip != 'true'
+        uses: actions/checkout@v7
+        with:
+          # claude-code-action fetches the PR branch itself with a plain `git fetch`. This
+          # repository is public, so that fetch needs no credentials, and leaving the job
+          # token (which can write to PRs and issues) out of .git/config keeps it away from
+          # the reviewer's shell commands.
+          persist-credentials: false
+          # Full history: the review reads git blame and the history of the lines it is
+          # looking at, and a shallow clone has none.
+          fetch-depth: 0
+
+      # The review policy is passed as a file, not an inline --append-system-prompt, so
+      # quotes, backticks and newlines in it cannot break argument parsing.
+      - name: Build system prompt
+        id: sysprompt
+        if: steps.labels.outputs.skip != 'true'
+        env:
+          REVIEW_POLICY: |
+            Everything below is this repository's review policy. Where it conflicts with the
+            code-review command's own instructions, this policy wins.
+
+            WHAT THIS REPOSITORY IS
+            A public GitHub composite action (action.yml) that other repositories call from
+            their pull request workflows, pinned to a major tag (for example @v2). Its logic
+            is bash, jq and curl embedded in the action's steps. It reads a PR's title and
+            body, resolves ClickUp ticket references in them, applies the tickets' tags as
+            PR labels, and posts one comment per ticket. It runs on the caller's runner with
+            the caller's GITHUB_TOKEN and ClickUp API token. Its inputs, their defaults, and
+            the comments and labels it writes are a contract with every caller.
+
+            SEVERITY IS A SEPARATE JUDGEMENT FROM CONFIDENCE
+            Give every surviving issue exactly one severity, judged only on the consequence
+            of shipping it:
+
+            - Critical: a token written to a log, a comment or a label; untrusted text (a PR
+              title or body, a ClickUp ticket's name or description) reaching a shell command
+              or an Actions expression interpolated into a `run:` block; a write to the wrong PR, or
+              deleting comments the action did not create.
+            - Major: a real defect that callers will hit in normal use; an input renamed,
+              removed or given a new default, or a change to the comments or labels callers
+              rely on, without a release note; a step that aborts under `bash -eo pipefail`
+              where it should degrade, or carries on where it should fail; an API error,
+              pagination limit or custom-ID case that silently drops tickets or labels; the
+              README contradicting action.yml.
+            - Minor: a real defect unlikely to be hit in practice, or a change that will
+              genuinely confuse the next person maintaining it.
+            - Note: everything else — naming, formatting, "I would have done this
+              differently".
+
+            Keep Critical and Major findings even at moderate confidence, 60 or above. Apply
+            the command's higher confidence bar to Minor only. Do not report Note items.
+
+            WHAT IS NOT A FINDING
+            - A missing, stale or imperfectly worded comment.
+            - A CLAUDE.md convention breach with no behavioural consequence.
+            - A style preference from an earlier pull request's review.
+
+            OUTPUT FORMAT
+            The first line is the verdict, exactly one of:
+
+            **Verdict: SHIP IT** when there is no Critical or Major finding.
+            **Verdict: CHANGES NEEDED** when there is at least one.
+
+            Then only the sections that have content:
+
+            ### Must fix before merge
+            Critical and Major findings, most severe first: a one-line description, the
+            severity in brackets, what happens if it ships, and a permalink.
+
+            ### Optional, non-blocking
+            Minor findings only, at most five.
+
+            When both are empty, still post the review with the SHIP IT verdict and one
+            sentence naming what was checked. Never invent or inflate a finding.
+        run: |
+          file="$RUNNER_TEMP/claude-review-system-prompt.md"
+          {
+            echo "When the code review is complete, post the full review — every finding, or an explicit statement that no issues were found — by updating your own existing PR comment with mcp__github_comment__update_claude_comment, even when an earlier review comment already exists on the PR. A final plain-text message is discarded and never reaches the PR. Never create a new pull request comment with gh pr comment: exactly one review comment must exist on this PR."
+            echo
+            printf '%s\n' "$REVIEW_POLICY"
+          } > "$file"
+          echo "system prompt: $(wc -c < "$file") bytes"
+          echo "file=$file" >> "$GITHUB_OUTPUT"
+
+      - name: Run Claude Code Review
+        id: claude-review
+        if: steps.labels.outputs.skip != 'true'
+        uses: anthropics/claude-code-action@v1
+        env:
+          # The code-review command runs its review passes as parallel subagents, and the
+          # CLI starts those in the background by default. In a headless run the job ends
+          # when the model ends its turn, so a reviewer that says "waiting on the passes"
+          # and stops posts nothing and still exits 0. This keeps the passes parallel but
+          # makes the reviewer wait for them.
+          CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1'
+        with:
+          # The organization's metered key, so reviews bill to the org account rather than
+          # to one person's subscription.
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Deliberately no `github_token`: passing one overrides the OIDC-minted App token
+          # and comments revert to github-actions[bot].
+          plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
+          plugins: 'code-review@claude-code-plugins'
+          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
+          track_progress: true
+          use_sticky_comment: true
+          allowed_bots: 'claude[bot]'
+          # Allow by TOOL NAME, block by COMMAND. The action prepends its own allow list and
+          # list flags accumulate, so this can only widen it; naming commands instead left
+          # reviews refused read-only git and gh. Deny is evaluated before allow, so the
+          # block list governs: no sending the job's credentials off the runner (curl,
+          # wget, nc, ssh, scp), no GitHub writes beyond the review comment (gh api, PR
+          # review/merge/close/edit, a second comment via gh pr/issue comment, git push),
+          # no web access. This is not a security
+          # boundary — the job's permissions and the secrets in scope are.
+          claude_args: |
+            --model ${{ steps.labels.outputs.model }}
+            --effort ${{ steps.labels.outputs.effort }}
+            --allowedTools "Bash,Read,Write,Glob,Grep,Task,Agent,Skill,SlashCommand,TodoWrite,mcp__github_comment__update_claude_comment,mcp__github_ci__get_ci_status,mcp__github_ci__get_workflow_run_details,mcp__github_ci__download_job_log"
+            --disallowedTools "Bash(curl:*),Bash(wget:*),Bash(nc:*),Bash(ssh:*),Bash(scp:*),Bash(gh api:*),Bash(gh pr review:*),Bash(gh pr merge:*),Bash(gh pr close:*),Bash(gh pr edit:*),Bash(gh pr comment:*),Bash(gh issue comment:*),Bash(git push:*),WebFetch,WebSearch"
+            --append-system-prompt-file "${{ steps.sysprompt.outputs.file }}"
+
+      # Not cruft — do not delete. use_sticky_comment is unreliable
+      # (https://github.com/anthropics/claude-code-action/issues/37), so the action can
+      # leave a fresh review comment on a run. This keeps the comment THIS run wrote and
+      # deletes older review comments, so a busy PR does not pile up stale reviews. It is
+      # a step, not a separate job, so the job-level concurrency group covers it: a newer
+      # run cancels it rather than racing it.
+      #
+      # Each comment is matched to its run by the job-run link claude-code-action writes
+      # into it. A claude[bot] comment from any other workflow (an @claude reply, say) is
+      # never touched. If this run's comment holds no verdict, the review did not land:
+      # the step fails, so the check is red rather than green, and older reviews stay.
+      - name: Check the review posted and delete older review comments
+        if: steps.labels.outputs.skip != 'true'
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number: context.issue.number,
+            });
+            const runOf = (c) => ((c.body || '').match(/\/actions\/runs\/(\d+)/) || [])[1];
+            const claude = comments.filter((c) => c.user.login === 'claude[bot]');
+            const current = claude.find((c) => runOf(c) === String(context.runId));
+            if (!current || !current.body.includes('Verdict:')) {
+              core.setFailed('The review did not post a verdict to its PR comment, so no review landed. Older review comments were left in place.');
+              return;
+            }
+            const workflowPath = '.github/workflows/claude-code-review.yml';
+            for (const c of claude) {
+              const runId = runOf(c);
+              if (c.id === current.id || !runId) continue;
+              try {
+                const { data: run } = await github.rest.actions.getWorkflowRun({ owner, repo, run_id: Number(runId) });
+                if (!(run.path || '').startsWith(workflowPath)) continue;
+              } catch (error) {
+                core.warning(`Could not read run ${runId} for comment ${c.id}; leaving it: ${error.message}`);
+                continue;
+              }
+              await github.rest.issues.deleteComment({ owner, repo, comment_id: c.id });
+            }
